@@ -7,24 +7,25 @@ use FreePBX;
 use FreePBX\FreePBX_Helpers as Helper;
 use FreePBX\modules\Restart\Job;
 use FreePBX\BMO;
+use \Ramsey\Uuid\Uuid;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class Restart extends Helper implements BMO
 {
     const MODULE_NAME = "restart";
 
-    private $FreePBX;
+    private FreePBX $FreePBX;
 
-    private static $messages = array(
+    private static array $messages = [
         "aastra"      => "aastra-check-cfg",
         "cisco"       => "cisco-check-cfg",
         "grandstream" => "grandstream-check-cfg",
         "poly"        => "polycom-check-cfg",
         "snom"        => "reboot-snom",
         "yealink"     => "reboot-yealink",
-    );
+    ];
 
-    public function __construct($freepbx = null)
+    public function __construct(FreePBX $freepbx = null)
     {
         if ($freepbx === null) {
             throw new Exception("Not given a FreePBX Object");
@@ -42,15 +43,16 @@ class Restart extends Helper implements BMO
 
     public function doConfigPageInit($page) {}
 
-    public function getActionBar($request)
+    public function getActionBar(string $request): array
     {
-        $buttons = array(
-            'submit' => array(
+        $buttons = [
+            'submit' => [
                 'name' => 'submit',
                 'id' => 'submit',
                 'value' => _('Restart Phones')
-            )
-        );
+            ],
+        ];
+
         return $buttons;
     }
 
@@ -62,29 +64,30 @@ class Restart extends Helper implements BMO
      * given to writeConfig."
      *
      * @see \FreePBX\FileHooks::processNewHooks()
-     * @return associative array with filename=>contents
+     * @return array<array<string,string>> with filename=>contents
      */
-    public function genConfig()
+    public function genConfig(): array
     {
-        $conf = array(
-            "sip_notify_additional.conf" => array(
-                "aastra-check-cfg"       => array("Event" => "check-sync"),
-                "aastra-xml"             => array("Event" => "aastra-xml"),
-                "algo-check-cfg"         => array("Event" => "check-sync"),
-                "audiocodes-check-cfg"   => array("Event" => "check-sync"),
-                "cisco-check-cfg"        => array("Event" => "check-sync"),
-                "cyberdata-check-cfg"    => array("Event" => "check-sync"),
-                "grandstream-check-cfg"  => array("Event" => "check-sync"),
-                "linksys-cold-restart"   => array("Event" => "reboot_now"),
-                "linksys-warm-restart"   => array("Event" => "restart_now"),
-                "panasonic-check-cfg"    => array("Event" => "check-sync"),
-                "polycom-check-cfg"      => array("Event" => "check-sync"),
-                "reboot-snom"            => array("Event" => "reboot"),
-                "reboot-yealink"         => array("Event" => "check-sync\\;reboot=false"),
-                "sipura-check-cfg"       => array("Event" => "resync"),
-                "spa-reboot"             => array("Event" => "reboot"),
-            ),
-        );
+        $conf = [
+            "sip_notify_additional.conf" => [
+                "aastra-check-cfg"       => ["Event" => "check-sync"],
+                "aastra-xml"             => ["Event" => "aastra-xml"],
+                "algo-check-cfg"         => ["Event" => "check-sync"],
+                "audiocodes-check-cfg"   => ["Event" => "check-sync"],
+                "cisco-check-cfg"        => ["Event" => "check-sync"],
+                "cyberdata-check-cfg"    => ["Event" => "check-sync"],
+                "grandstream-check-cfg"  => ["Event" => "check-sync"],
+                "linksys-cold-restart"   => ["Event" => "reboot_now"],
+                "linksys-warm-restart"   => ["Event" => "restart_now"],
+                "panasonic-check-cfg"    => ["Event" => "check-sync"],
+                "polycom-check-cfg"      => ["Event" => "check-sync"],
+                "reboot-snom"            => ["Event" => "reboot"],
+                "reboot-yealink"         => ["Event" => "check-sync\\;reboot=false"],
+                "sipura-check-cfg"       => ["Event" => "resync"],
+                "spa-reboot"             => ["Event" => "reboot"],
+            ],
+        ];
+
         return $conf;
     }
 
@@ -95,7 +98,7 @@ class Restart extends Helper implements BMO
      * @param array $config The configuration object (returned from genConfig)
      * @return void
      */
-    public function writeConfig($config)
+    public function writeConfig(array $config): void
     {
         $this->FreePBX->WriteConfig($config);
     }
@@ -106,50 +109,30 @@ class Restart extends Helper implements BMO
      * @see \FreePBX\Ajax::doRequest()
      * @param string $command The command name
      * @param string $setting Settings to return back
-     * @return boolean
+     * @return bool
      */
-    public function ajaxRequest($command, &$setting)
+    public function ajaxRequest(string $command, string &$setting): bool
     {
-        return in_array($command, array("listJobs", "deleteJob"));
+        return in_array($command, ["listJobs", "deleteJob"]);
     }
 
     /**
      * Handle the ajax request, passed in $_REQUEST["command"]
      *
      * @see \FreePBX\Ajax::doRequest()
-     * @return mixed The result of the command
+     * @return array The result of the command
      */
     public function ajaxHandler()
     {
         $request = $_REQUEST;
-        $command = isset($request["command"]) ? $request["command"] : "";
+        $command = $request["command"] ?? "";
         if ($command === "listJobs") {
             $return = [];
-            try {
-                $job = FreePBX::Job();
-                $jobs = array_filter(
-                    $job->getAll(),
-                    function($v) { return $v["modulename"] === self::MODULE_NAME; }
-                );
-            } catch (Exception $e) {
-                // assume exception means no Job class, create an array that looks like v15
-                $conf = FreePBX::Config();
-                $user = $conf->get("AMPASTERISKWEBUSER");
-                $cron = FreePBX::Cron($user);
-                $jobs = array_filter(
-                    $cron->getAll(),
-                    function($v) { return preg_match("/(?:scheduled|recurring)_reboot_/", $v); }
-                );
-                $newjobs = array();
-                foreach ($jobs as $job) {
-                    $cron = explode(" ", $job);
-                    $newjobs[] = array(
-                        "schedule" => implode(" ", array_slice($cron, 0, 5)),
-                        "jobname" => str_replace("--jobname=", "", $cron[7]),
-                    );
-                }
-                $jobs = $newjobs;
-            }
+            $job = FreePBX::Job();
+            $jobs = array_filter(
+                $job->getAll(),
+                fn($v) => $v["modulename"] === self::MODULE_NAME
+            );
             $now = new Datetime();
             foreach ($jobs as $job) {
                 $sched = explode(" ", $job["schedule"]);
@@ -159,8 +142,7 @@ class Restart extends Helper implements BMO
                 $day = $sched[2];
                 $month = $sched[3];
                 $jobname = $job["jobname"];
-                $recurring = (strpos($jobname, "recurring") === 0);
-                if ($recurring) {
+                if (str_starts_with($jobname, "recurring")) {
                     if ("$day$month" === "**") {
                         $dt = Datetime::createFromFormat("Hi", "$hour$minute");
                         $time = sprintf(_("Every day at %s"), $dt->format(_("g:i a")));
@@ -190,7 +172,7 @@ class Restart extends Helper implements BMO
                     $dt = Datetime::createFromFormat("Hi", "$hour$minute");
                     $time = sprintf(
                         _("%s at %s"),
-                        $dt > $now ? _("Tomorrow") : _("Today"),
+                        $dt < $now ? _("Tomorrow") : _("Today"),
                         $dt->format(_("g:i a"))
                     );
                 } elseif ($month === "*") {
@@ -230,17 +212,20 @@ class Restart extends Helper implements BMO
                 } else {
                     $devices = _("None (invalid entry)");
                 }
-                $return[] = array(
+                $return[] = [
                     "jobname" => $jobname,
                     "time" => $time,
                     "devices" => $devices,
-                );
+                ];
             }
+
             return $return;
         } elseif ($command === "deleteJob") {
             $jobname = $_GET["itemid"];
-            return$this->deleteJob($jobname);
+
+            return $this->deleteJob($jobname);
         }
+
         return ["status"=>false, "message"=>_("Unknown command")];
     }
 
@@ -251,7 +236,7 @@ class Restart extends Helper implements BMO
             htmlspecialchars(_("Currently, only Aastra, Snom, Polycom, Grandstream and Cisco devices are supported."))
         );
 
-        if (isset($_POST["restartlist"]) && is_array($_POST["restartlist"])) {
+        if (is_array($_POST["restartlist"] ?? null)) {
             // when would this be displayed, and why???
             $txtinfo = sprintf(
                 '<div class="well well-warning">%s</div>',
@@ -278,7 +263,7 @@ class Restart extends Helper implements BMO
                 } else {
                     $format = "m-d H:i";
                 }
-                $date = \Datetime::createFromFormat($format, "$schedmonth-$schedday $schedtime");
+                $date = Datetime::createFromFormat($format, "$schedmonth-$schedday $schedtime");
                 if ($date) {
                     FreePBX::Restart()->scheduleRestart($restartlist, $schedtime, $schedmonth, $schedday, $recurring);
                     $txtinfo = sprintf(
@@ -302,6 +287,7 @@ class Restart extends Helper implements BMO
                 $device_list[] = $device;
             }
         }
+
         return load_view(__DIR__ . "/views/page.restart.php", compact("txtinfo", "device_list"));
     }
 
@@ -311,48 +297,6 @@ class Restart extends Helper implements BMO
             $this->runJob($output, $jobname, true);
         } elseif (strpos($jobname, "recurring_reboot_") === 0) {
             $this->runJob($output, $jobname);
-        } elseif ($jobname === "") {
-            $d = new Datetime();
-            $time = $d->format("n_j_Hi");
-            // run one-time job based on date/time
-            $jobname = "scheduled_reboot_{$time}";
-            $this->runJob($output, $jobname, true);
-
-            $time = $d->format("*_*_Hi");
-            // run one-time job based on just time
-            $jobname = "scheduled_reboot_{$time}";
-            $this->runJob($output, $jobname, true);
-
-            $jobs = $this->getAll();
-            foreach ($jobs as $name => $job) {
-                if (strpos($name, "recurring_reboot_") !== 0) {
-                    continue;
-                }
-                // check for daily jobs
-                $time = $d->format("*_*_Hi");
-                if (strpos($name, "recurring_reboot_{$time}_") === 0) {
-                    $this->runJob($output, $name);
-                    continue;
-                }
-                // check for monthly jobs
-                $time = $d->format("*_j_Hi");
-                if (strpos($name, "recurring_reboot_{$time}_") === 0) {
-                    $this->runJob($output, $name);
-                    continue;
-                }
-                // check for annual jobs
-                $time = $d->format("n_j_Hi");
-                if (strpos($name, "recurring_reboot_{$time}_") === 0) {
-                    $this->runJob($output, $name);
-                    continue;
-                }
-                // check for fucked up jobs (every day in a month???)
-                $time = $d->format("n_*_Hi");
-                if (strpos($name, "recurring_reboot_{$time}_") === 0) {
-                    $this->runJob($output, $name);
-                    continue;
-                }
-            }
         }
     }
 
@@ -371,24 +315,16 @@ class Restart extends Helper implements BMO
         $this->deleteJob($jobname);
     }
 
-    private function deleteJob($jobname)
+    private function deleteJob(string $jobname): array
     {
         $this->delConfig($jobname);
-        try {
-            $job = FreePBX::Job();
-            $result = $job->remove(self::MODULE_NAME, $jobname);
-        } catch (Exception $e) {
-            // assume exception means no Job class
-            $conf = FreePBX::Config();
-            $user = $conf->get("AMPASTERISKWEBUSER");
-            $cron = FreePBX::Cron($user);
-            $result = $cron->removeAll("--jobname=$jobname");
-        }
+        $job = FreePBX::Job();
+        $result = $job->remove(self::MODULE_NAME, $jobname);
 
-        return $result;
+        return [$result];
     }
 
-    public static function restartDevice($device)
+    public static function restartDevice(string $device): bool
     {
         $ua = self::getUserAgent($device);
         if ($ua) {
@@ -398,14 +334,10 @@ class Restart extends Helper implements BMO
         return false;
     }
 
-    public function scheduleRestart($device, $schedtime, $schedmonth, $schedday, $recurring = false)
+    public function scheduleRestart(string $device, string $schedtime, string $schedmonth, string $schedday, bool $recurring = false): bool
     {
         list($hour, $min) = explode(":", $schedtime);
-        if (class_exists("\Ramsey\Uuid\Uuid")) {
-            $uuid = \Ramsey\Uuid\Uuid::uuid4();
-        } elseif (class_exists("\Rhumsaa\Uuid\Uuid")) {
-            $uuid = \Rhumsaa\Uuid\Uuid::uuid4();
-        }
+        $uuid = Uuid::uuid4();
         $jobname = sprintf(
             "%s_reboot_%s_%s_%s%s_%s",
             ($recurring ? "recurring" : "scheduled"),
@@ -416,81 +348,44 @@ class Restart extends Helper implements BMO
             $uuid
         );
         $schedule = "$min $hour $schedday $schedmonth *";
-        try {
-            $job = FreePBX::Job();
-            $job->remove(self::MODULE_NAME, $jobname);
-            $job->addClass(
-                self::MODULE_NAME,
-                $jobname,
-                Job::class,
-                $schedule
-            );
-        } catch (Exception $e) {
-            // assume exception means no Job class
-            $conf = FreePBX::Config();
-            $user = $conf->get("AMPASTERISKWEBUSER");
-            $bindir = $conf->get("AMPSBIN");
-            $cron = FreePBX::Cron($user);
-            $cron->removeAll($jobname);
-            $cron->add(array(
-                "command" => "$bindir/fwconsole phonerestart --jobname=$jobname",
-                "minute" => $min,
-                "hour" => $hour,
-                "dom" => $schedday,
-                "month" => $schedmonth,
-            ));
-        }
+        $job = FreePBX::Job();
+        $job->remove(self::MODULE_NAME, $jobname);
+        $job->addClass(
+            self::MODULE_NAME,
+            $jobname,
+            Job::class,
+            $schedule
+        );
         $this->setConfig($jobname, $device);
     }
 
-    public static function getUserAgent($device)
+    public static function getUserAgent(string $device): string
     {
-        $driver = FreePBX::Config()->get('ASTSIPDRIVER');
         $astman = FreePBX::astman();
         $agents = array_keys(self::$messages);
 
-        if ($driver === "chan_sip" || $driver === "both") {
-            $command = sprintf("sip show peer %s", $device);
-            $response = $astman->command($command);
-            $response = implode("\n", $response);
-            if (preg_match("/useragent *: *(.*?)\n/i", $response, $matches) && count($matches) > 1) {
-                $ua = $matches[1];
+        // can't do a wildcard search through the cache
+        $astman->useCaching=false;
+        $command = sprintf("registrar/contact/%d%%", $device);
+        $responses = $astman->database_show($command);
+        foreach ($responses as $contact => $data) {
+            $data = json_decode($data, true);
+            if (!empty($data["user_agent"])) {
+                $ua = $data["user_agent"];
                 $result = array_filter($agents, function ($v) use ($ua){
                     return preg_match("/\\b$v/i", $ua);
                 });
                 return array_pop($result);
             }
         }
-        if ($driver === "chan_pjsip" || $driver === "both") {
-            // can't do a wildcard search through the cache
-            $astman->useCaching=false;
-            $command = sprintf("registrar/contact/%d%%", $device);
-            $responses = $astman->database_show($command);
-            foreach ($responses as $contact=>$data) {
-                $data = json_decode($data, true);
-                if (!empty($data["user_agent"])) {
-                    $ua = $data["user_agent"];
-                    $result = array_filter($agents, function ($v) use ($ua){
-                        return preg_match("/\\b$v/i", $ua);
-                    });
-                    return array_pop($result);
-                }
-            }
-        }
-        return null;
+
+        return "";
     }
 
-    private static function sipNotify($event, $device)
+    private static function sipNotify(string $event, string $device): mixed
     {
         $astman = FreePBX::astman();
-        $driver = FreePBX::Config()->get('ASTSIPDRIVER');
-        if ($driver === "chan_sip" || $driver === "both") {
-            $command = sprintf("sip notify %s %s", $event, $device);
-            $res = $astman->command($command);
-        }
-        if ($driver === "chan_pjsip" || $driver === "both") {
-            $command = sprintf("pjsip send notify %s endpoint %s", $event, $device);
-            $res = $astman->command($command);
-        }
+        $command = sprintf("pjsip send notify %s endpoint %s", $event, $device);
+        return $astman->command($command);
     }
 }

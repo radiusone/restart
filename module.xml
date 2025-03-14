@@ -1,13 +1,14 @@
 <module>
 	<rawname>restart</rawname>
 	<name>Bulk Phone Restart</name>
-	<version>15.2.3</version>
+	<version>17.0beta1</version>
 	<publisher>RadiusOne</publisher>
 	<license>GPLv3+</license>
 	<licenselink>http://www.gnu.org/licenses/gpl-3.0.txt</licenselink>
 	<category>Admin</category>
 	<changelog>
 <![CDATA[
+17.0: Drop support for old FreePBX versions and chan_sip
 15.2: Support chan_pjsip
 15.1.1: Add Polycom CCX support
 15.1: Improve scheduling, add day/month and recurring options
@@ -39,7 +40,8 @@
 ]]>
 	</changelog>
 	<depends>
-		<version>13.0</version>
+		<version>17.0</version>
+		<phpversion>8.2</phpversion>
 	</depends>
 	<description>
 		Restart registered phones through the FreePBX web interface, CLI, or on a schedule.
@@ -48,7 +50,7 @@
 		<restart>Phone Restart</restart>
 	</menuitems>
 	<supported>
-		<version>13.0</version>
+		<version>17.0</version>
 	</supported>
 	<console>
 		<command>
