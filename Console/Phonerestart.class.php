@@ -2,26 +2,26 @@
 namespace FreePBX\Console\Command;
 
 use FreePBX;
+use FreePBX\modules\Restart as RestartModule;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Command\HelpCommand;
-use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
-use FreePBX\modules\Restart as RestartModule;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 
 class Phonerestart extends Command
 {
-    private $jobname;
-    private $extensions;
+    private string $jobname;
+    private array $extensions;
 
-    private $verbosity = OutputInterface::VERBOSITY_NORMAL;
-    private $stderr;
+    private int $verbosity = OutputInterface::VERBOSITY_NORMAL;
+    private OutputInterface $stderr;
 
-    private $input;
-    private $output;
+    private InputInterface $input;
+    private OutputInterface $output;
 
-    protected function configure()
+    protected function configure(): void
     {
         $this->setName("phonerestart");
         $this->setAliases(["pr"]);
@@ -45,7 +45,7 @@ class Phonerestart extends Command
         ));
     }
 
-    protected function initialize(InputInterface $input, OutputInterface $output)
+    protected function initialize(InputInterface $input, OutputInterface $output): void
     {
         $this->input = $input;
         $this->output = $output;
@@ -56,7 +56,9 @@ class Phonerestart extends Command
         $extensions = $input->getOption("extension");
 
         if ($jobname) {
-            if (!preg_match("/^(?:scheduled|recurring)_reboot_[0-9_*-]+/", $jobname)) {
+            /** @var RestartModule $restarter */
+            $restarter = FreePBX::create()->Restart;
+            if (!$restarter->getConfig($jobname)) {
                 $this->showHelp("Invalid job name specified");
             }
             $this->jobname = $jobname;
@@ -71,15 +73,21 @@ class Phonerestart extends Command
         }
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): void
     {
-        // need to make sure the module class is available
+        /** @var RestartModule $restarter */
         $restarter = FreePBX::create()->Restart;
         if ($this->jobname) {
             if ($this->extensions) {
                 $this->stderrOutput(_("Job name specified, ignoring extensions."));
             }
-            $restarter->runJobs($output, $this->jobname);
+            $result = $restarter->runJob(
+                $output,
+                $this->jobname,
+                delete: !str_starts_with($this->jobname, "recurring")
+            );
+
+            exit($result ? Command::SUCCESS : Command::FAILURE);
         } else {
             foreach ($this->extensions as $ext) {
                 if (RestartModule::restartDevice($ext)) {
@@ -87,9 +95,11 @@ class Phonerestart extends Command
                 }
             }
         }
+
+        exit(Command::SUCCESS);
     }
 
-    private function stderrOutput($msg, $debug = false)
+    private function stderrOutput(string $msg, bool $debug = false): void
     {
         if ($this->verbosity === OutputInterface::VERBOSITY_QUIET) {
             return;
@@ -98,12 +108,12 @@ class Phonerestart extends Command
         $this->stderr->writeln(trim($msg), $verbosity);
     }
 
-    private function showHelp($msg = "")
+    private function showHelp(string $msg = ""): void
     {
         $this->stderrOutput($msg);
         $help = new HelpCommand();
         $help->setCommand($this);
         $help->run($this->input, $this->output);
-        exit(2);
+        exit(Command::INVALID);
     }
 }

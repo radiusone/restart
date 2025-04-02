@@ -2,12 +2,13 @@
 namespace FreePBX\modules;
 
 use DateTime;
-use Exception;
 use FreePBX;
+use FreePBX\Ajax;
+use AGI_AsteriskManager;
+use FreePBX\BMO;
 use FreePBX\FreePBX_Helpers as Helper;
 use FreePBX\modules\Restart\Job;
-use FreePBX\BMO;
-use \Ramsey\Uuid\Uuid;
+use Ramsey\Uuid\Uuid;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class Restart extends Helper implements BMO
@@ -25,12 +26,9 @@ class Restart extends Helper implements BMO
         "yealink"     => "reboot-yealink",
     ];
 
-    public function __construct(FreePBX $freepbx = null)
+    public function __construct(FreePBX|Ajax $freepbx)
     {
-        if ($freepbx === null) {
-            throw new Exception("Not given a FreePBX Object");
-        }
-        $this->FreePBX = $freepbx;
+        $this->FreePBX = $freepbx instanceof FreePBX ? $freepbx : FreePBX::create();
     }
 
     public function install() {}
@@ -43,7 +41,7 @@ class Restart extends Helper implements BMO
 
     public function doConfigPageInit($page) {}
 
-    public function getActionBar(string $request): array
+    public function getActionBar(array $request): array
     {
         $buttons = [
             'submit' => [
@@ -64,7 +62,7 @@ class Restart extends Helper implements BMO
      * given to writeConfig."
      *
      * @see \FreePBX\FileHooks::processNewHooks()
-     * @return array<array<string,string>> with filename=>contents
+     * @return array<string,array<string,array<string,string>>> with filename=>section=>contents
      */
     public function genConfig(): array
     {
@@ -108,10 +106,10 @@ class Restart extends Helper implements BMO
      *
      * @see \FreePBX\Ajax::doRequest()
      * @param string $command The command name
-     * @param string $setting Settings to return back
+     * @param array $setting Settings to return back
      * @return bool
      */
-    public function ajaxRequest(string $command, string &$setting): bool
+    public function ajaxRequest(string $command, array &$setting): bool
     {
         return in_array($command, ["listJobs", "deleteJob"]);
     }
@@ -120,7 +118,7 @@ class Restart extends Helper implements BMO
      * Handle the ajax request, passed in $_REQUEST["command"]
      *
      * @see \FreePBX\Ajax::doRequest()
-     * @return array The result of the command
+     * @return array{status:bool, message:string}|list<array<string,string>> The result of the command
      */
     public function ajaxHandler()
     {
@@ -208,7 +206,7 @@ class Restart extends Helper implements BMO
                     );
                 }
                 if ($devices = $this->getConfig($jobname)) {
-                    $devices = implode(", ", $devices);
+                    $devices = is_array($devices) ? implode(", ", $devices) : $devices;
                 } else {
                     $devices = _("None (invalid entry)");
                 }
@@ -229,7 +227,7 @@ class Restart extends Helper implements BMO
         return ["status"=>false, "message"=>_("Unknown command")];
     }
 
-    public function showPage()
+    public function showPage(): string
     {
         $txtinfo = sprintf(
             '<div class="well well-info">%s</div>',
@@ -237,11 +235,6 @@ class Restart extends Helper implements BMO
         );
 
         if (is_array($_POST["restartlist"] ?? null)) {
-            // when would this be displayed, and why???
-            $txtinfo = sprintf(
-                '<div class="well well-warning">%s</div>',
-                htmlspecialchars(_("Warning: The restart mechanism behavior is vendor specific.  Some vendors only restart the phone if there is a change to the phone configuration or if an updated firmware is available via tftp/ftp/http"))
-            );
             $restartlist = $_POST['restartlist'];
             if (empty($_POST["schedtime"])) {
                 foreach($restartlist as $device) {
@@ -265,7 +258,9 @@ class Restart extends Helper implements BMO
                 }
                 $date = Datetime::createFromFormat($format, "$schedmonth-$schedday $schedtime");
                 if ($date) {
-                    FreePBX::Restart()->scheduleRestart($restartlist, $schedtime, $schedmonth, $schedday, $recurring);
+                    foreach ($restartlist as $device) {
+                        $this->scheduleRestart($device, $schedtime, $schedmonth, $schedday, $recurring);
+                    }
                     $txtinfo = sprintf(
                         '<div class="well well-info">%s</div>',
                         htmlspecialchars(_("Restart requests scheduled!"))
@@ -288,28 +283,27 @@ class Restart extends Helper implements BMO
             }
         }
 
-        return load_view(__DIR__ . "/views/page.restart.php", compact("txtinfo", "device_list"));
+        return load_view(__DIR__ . "/views/page.restart.php", compact("txtinfo", "device_list")) ?: "";
     }
 
-    public function runJobs(OutputInterface $output, $jobname = "")
-    {
-        if (strpos($jobname, "scheduled_reboot_") === 0) {
-            $this->runJob($output, $jobname, true);
-        } elseif (strpos($jobname, "recurring_reboot_") === 0) {
-            $this->runJob($output, $jobname);
-        }
-    }
-
-    private function runJob(OutputInterface $output, $jobname, $delete = false)
+    /**
+     * Run a named job
+     * 
+     * @param bool $delete if true, the job will be deleted after running
+     */
+    public function runJob(OutputInterface $output, string $jobname, bool $delete = false): void
     {
         if ($devicelist = $this->getConfig($jobname)) {
+            if (!is_array($devicelist)) {
+                $devicelist = [$devicelist];
+            }
             foreach ($devicelist as $device) {
-                $output->writeln(sprintf(_("Restart request sent for %s"), $device));
-                self::restartDevice($device);
+                $output->write(sprintf(_("Sending restart request for %s..."), $device));
+                $result = self::restartDevice($device);
+                $output->writeln($result ? _("success") : _("error"));
             }
         }
         if ($delete !== true) {
-            // keep recurring jobs
             return;
         }
         $this->deleteJob($jobname);
@@ -327,11 +321,11 @@ class Restart extends Helper implements BMO
     public static function restartDevice(string $device): bool
     {
         $ua = self::getUserAgent($device);
-        if ($ua) {
-            self::sipNotify(self::$messages[$ua], $device);
-            return true;
+        if ($ua === "") {
+            return false;
         }
-        return false;
+
+        return self::sipNotify(self::$messages[$ua], $device);
     }
 
     public function scheduleRestart(string $device, string $schedtime, string $schedmonth, string $schedday, bool $recurring = false): bool
@@ -356,7 +350,8 @@ class Restart extends Helper implements BMO
             Job::class,
             $schedule
         );
-        $this->setConfig($jobname, $device);
+
+        return $this->setConfig($jobname, $device);
     }
 
     public static function getUserAgent(string $device): string
@@ -375,17 +370,20 @@ class Restart extends Helper implements BMO
                 $result = array_filter($agents, function ($v) use ($ua){
                     return preg_match("/\\b$v/i", $ua);
                 });
-                return array_pop($result);
+                return array_pop($result) ?? "";
             }
         }
 
         return "";
     }
 
-    private static function sipNotify(string $event, string $device): mixed
+    private static function sipNotify(string $event, string $device): bool
     {
+        /** @var AGI_AsteriskManager $astman  */
         $astman = FreePBX::astman();
         $command = sprintf("pjsip send notify %s endpoint %s", $event, $device);
-        return $astman->command($command);
+        $result = $astman->command($command);
+
+        return $result["Response"] === "Success";
     }
 }
