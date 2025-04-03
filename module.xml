@@ -1,7 +1,7 @@
 <module>
 	<rawname>restart</rawname>
 	<name>Bulk Phone Restart</name>
-	<version>17.0beta1</version>
+	<version>17.0</version>
 	<publisher>RadiusOne</publisher>
 	<license>GPLv3+</license>
 	<licenselink>http://www.gnu.org/licenses/gpl-3.0.txt</licenselink>

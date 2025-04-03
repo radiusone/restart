@@ -9,7 +9,6 @@ use FreePBX\BMO;
 use FreePBX\FreePBX_Helpers as Helper;
 use FreePBX\modules\Restart\Job;
 use Ramsey\Uuid\Uuid;
-use Symfony\Component\Console\Output\OutputInterface;
 
 class Restart extends Helper implements BMO
 {
@@ -26,6 +25,9 @@ class Restart extends Helper implements BMO
         "yealink"     => "reboot-yealink",
     ];
 
+    /**
+     * When receiving ajax requests, a FreePBX instance is not passed for some reason
+     */
     public function __construct(FreePBX|Ajax $freepbx)
     {
         $this->FreePBX = $freepbx instanceof FreePBX ? $freepbx : FreePBX::create();
@@ -124,109 +126,17 @@ class Restart extends Helper implements BMO
     {
         $request = $_REQUEST;
         $command = $request["command"] ?? "";
-        if ($command === "listJobs") {
-            $return = [];
-            $job = FreePBX::Job();
-            $jobs = array_filter(
-                $job->getAll(),
-                fn($v) => $v["modulename"] === self::MODULE_NAME
-            );
-            $now = new Datetime();
-            foreach ($jobs as $job) {
-                $sched = explode(" ", $job["schedule"]);
-                $time = $job["schedule"];
-                $minute = $sched[0];
-                $hour = $sched[1];
-                $day = $sched[2];
-                $month = $sched[3];
-                $jobname = $job["jobname"];
-                if (str_starts_with($jobname, "recurring")) {
-                    if ("$day$month" === "**") {
-                        $dt = Datetime::createFromFormat("Hi", "$hour$minute");
-                        $time = sprintf(_("Every day at %s"), $dt->format(_("g:i a")));
-                    } elseif ($month === "*") {
-                        $dt = Datetime::createFromFormat("Hi j", "$hour$minute $day");
-                        $time = sprintf(
-                            _("%s of every month at %s"),
-                            $dt->format(_("jS")),
-                            $dt->format(_("g:i a"))
-                        );
-                    } elseif ($day === "*") {
-                        $dt = Datetime::createFromFormat("Hi n", "$hour$minute $month");
-                        $time = sprintf(
-                            _("Every day in %s at %s"),
-                            $dt->format(_("F")),
-                            $dt->format(_("g:i a"))
-                        );
-                    } else {
-                        $dt = Datetime::createFromFormat("Hi n j", "$hour$minute $month $day");
-                        $time = sprintf(
-                            _("Every year on %s at %s"),
-                            $dt->format(_("j M")),
-                            $dt->format(_("g:i a"))
-                        );
-                    }
-                } elseif ("$day$month" === "**") {
-                    $dt = Datetime::createFromFormat("Hi", "$hour$minute");
-                    $time = sprintf(
-                        _("%s at %s"),
-                        $dt < $now ? _("Tomorrow") : _("Today"),
-                        $dt->format(_("g:i a"))
-                    );
-                } elseif ($month === "*") {
-                    // check if it's this month or next
-                    $dt = Datetime::createFromFormat("Hi j", "$hour$minute $day");
-                    if ($now > $dt) {
-                        $dt->modify("+1 month");
-                    }
-                    $time = sprintf(
-                        "%s at %s",
-                        $dt->format("md") < $now->format("md")
-                            ? $dt->modify("+1 year")->format(_("j M Y"))
-                            : $dt->format(_("j M")),
-                        $dt->format(_("g:i a"))
-                    );
-                } elseif ($day === "*") {
-                    $dt = Datetime::createFromFormat("n j Hi", "$month 1 $hour$minute");
-                    $time = sprintf(
-                        "%s at %s",
-                        $dt->format("md") < $now->format("md")
-                            ? $dt->modify("+1 year")->format(_("j M Y"))
-                            : $dt->format(_("j M")),
-                        $dt->format(_("g:i a"))
-                    );
-                } else {
-                    $dt = Datetime::createFromFormat("n j Hi", "$month $day $hour$minute");
-                    $time = sprintf(
-                        "%s at %s",
-                        $dt->format("md") < $now->format("md")
-                            ? $dt->modify("+1 year")->format(_("j M Y"))
-                            : $dt->format(_("j M")),
-                        $dt->format(_("g:i a"))
-                    );
-                }
-                if ($devices = $this->getConfig($jobname)) {
-                    $devices = is_array($devices) ? implode(", ", $devices) : $devices;
-                } else {
-                    $devices = _("None (invalid entry)");
-                }
-                $return[] = [
-                    "jobname" => $jobname,
-                    "time" => $time,
-                    "devices" => $devices,
-                ];
-            }
-
-            return $return;
-        } elseif ($command === "deleteJob") {
-            $jobname = $_GET["itemid"];
-
-            return $this->deleteJob($jobname);
+        $jobname = $request["itemid"] ?? "";
+        if (method_exists($this, $command)) {
+            return $this->$command($jobname);
         }
 
         return ["status"=>false, "message"=>_("Unknown command")];
     }
 
+    /**
+     * Return the main page content
+     */
     public function showPage(): string
     {
         $txtinfo = sprintf(
@@ -256,7 +166,7 @@ class Restart extends Helper implements BMO
                 } else {
                     $format = "m-d H:i";
                 }
-                $date = Datetime::createFromFormat($format, "$schedmonth-$schedday $schedtime");
+                $date = DateTime::createFromFormat($format, "$schedmonth-$schedday $schedtime");
                 if ($date) {
                     foreach ($restartlist as $device) {
                         $this->scheduleRestart($device, $schedtime, $schedmonth, $schedday, $recurring);
@@ -286,29 +196,106 @@ class Restart extends Helper implements BMO
         return load_view(__DIR__ . "/views/page.restart.php", compact("txtinfo", "device_list")) ?: "";
     }
 
-    /**
-     * Run a named job
-     * 
-     * @param bool $delete if true, the job will be deleted after running
-     */
-    public function runJob(OutputInterface $output, string $jobname, bool $delete = false): void
+    public function listJobs(): array
     {
-        if ($devicelist = $this->getConfig($jobname)) {
-            if (!is_array($devicelist)) {
-                $devicelist = [$devicelist];
+        $return = [];
+        $job = FreePBX::Job();
+        $jobs = array_filter(
+            $job->getAll(),
+            fn($v) => $v["modulename"] === self::MODULE_NAME
+        );
+        $now = new Datetime();
+        foreach ($jobs as $job) {
+            $sched = explode(" ", $job["schedule"]);
+            $time = $job["schedule"];
+            $minute = $sched[0];
+            $hour = $sched[1];
+            $day = $sched[2];
+            $month = $sched[3];
+            $jobname = $job["jobname"];
+            if (str_starts_with($jobname, "recurring")) {
+                if ("$day$month" === "**") {
+                    $dt = Datetime::createFromFormat("Hi", "$hour$minute");
+                    $time = sprintf(_("Every day at %s"), $dt->format(_("g:i a")));
+                } elseif ($month === "*") {
+                    $dt = Datetime::createFromFormat("Hi j", "$hour$minute $day");
+                    $time = sprintf(
+                        _("%s of every month at %s"),
+                        $dt->format(_("jS")),
+                        $dt->format(_("g:i a"))
+                    );
+                } elseif ($day === "*") {
+                    $dt = Datetime::createFromFormat("Hi n", "$hour$minute $month");
+                    $time = sprintf(
+                        _("Every day in %s at %s"),
+                        $dt->format(_("F")),
+                        $dt->format(_("g:i a"))
+                    );
+                } else {
+                    $dt = Datetime::createFromFormat("Hi n j", "$hour$minute $month $day");
+                    $time = sprintf(
+                        _("Every year on %s at %s"),
+                        $dt->format(_("j M")),
+                        $dt->format(_("g:i a"))
+                    );
+                }
+            } elseif ("$day$month" === "**") {
+                $dt = Datetime::createFromFormat("Hi", "$hour$minute");
+                $time = sprintf(
+                    _("%s at %s"),
+                    $dt < $now ? _("Tomorrow") : _("Today"),
+                    $dt->format(_("g:i a"))
+                );
+            } elseif ($month === "*") {
+                // check if it's this month or next
+                $dt = Datetime::createFromFormat("Hi j", "$hour$minute $day");
+                if ($now > $dt) {
+                    $dt->modify("+1 month");
+                }
+                $time = sprintf(
+                    "%s at %s",
+                    $dt->format("md") < $now->format("md")
+                        ? $dt->modify("+1 year")->format(_("j M Y"))
+                        : $dt->format(_("j M")),
+                    $dt->format(_("g:i a"))
+                );
+            } elseif ($day === "*") {
+                $dt = Datetime::createFromFormat("n j Hi", "$month 1 $hour$minute");
+                $time = sprintf(
+                    "%s at %s",
+                    $dt->format("md") < $now->format("md")
+                        ? $dt->modify("+1 year")->format(_("j M Y"))
+                        : $dt->format(_("j M")),
+                    $dt->format(_("g:i a"))
+                );
+            } else {
+                $dt = Datetime::createFromFormat("n j Hi", "$month $day $hour$minute");
+                $time = sprintf(
+                    "%s at %s",
+                    $dt->format("md") < $now->format("md")
+                        ? $dt->modify("+1 year")->format(_("j M Y"))
+                        : $dt->format(_("j M")),
+                    $dt->format(_("g:i a"))
+                );
             }
-            foreach ($devicelist as $device) {
-                $output->write(sprintf(_("Sending restart request for %s..."), $device));
-                $result = self::restartDevice($device);
-                $output->writeln($result ? _("success") : _("error"));
+            if ($devices = $this->getConfig($jobname)) {
+                $devices = is_array($devices) ? implode(", ", $devices) : $devices;
+            } else {
+                $devices = _("None (invalid entry)");
             }
+            $return[] = [
+                "jobname" => $jobname,
+                "time" => $time,
+                "devices" => $devices,
+            ];
         }
-        if ($delete !== true) {
-            return;
-        }
-        $this->deleteJob($jobname);
+
+        return $return;
     }
 
+    /**
+     * Delete a named job
+     */
     private function deleteJob(string $jobname): array
     {
         $this->delConfig($jobname);
@@ -328,6 +315,15 @@ class Restart extends Helper implements BMO
         return self::sipNotify(self::$messages[$ua], $device);
     }
 
+    /**
+     * Save the scheduled restart as a job and also as a module config setting
+     * 
+     * @param string $device the extension to restart
+     * @param string $schedtime the restart time of day in hh:mm format
+     * @param string $schedmonth the restart month (1-12) or *
+     * @param string $schedday the restart day (1-31) or *
+     * @param bool $recurring if true, the job and config are retained after running, to be run again 
+     */
     public function scheduleRestart(string $device, string $schedtime, string $schedmonth, string $schedday, bool $recurring = false): bool
     {
         list($hour, $min) = explode(":", $schedtime);
@@ -354,13 +350,18 @@ class Restart extends Helper implements BMO
         return $this->setConfig($jobname, $device);
     }
 
+    /**
+     * Get an extension's user-agent string
+     * 
+     * @param string $device the extension number
+     */
     public static function getUserAgent(string $device): string
     {
         $astman = FreePBX::astman();
         $agents = array_keys(self::$messages);
 
         // can't do a wildcard search through the cache
-        $astman->useCaching=false;
+        $astman->useCaching = false;
         $command = sprintf("registrar/contact/%d%%", $device);
         $responses = $astman->database_show($command);
         foreach ($responses as $contact => $data) {
@@ -377,6 +378,12 @@ class Restart extends Helper implements BMO
         return "";
     }
 
+    /**
+     * Send a SIP notify command
+     * 
+     * @param string $event the name of the SIP event
+     * @param string $device the extension number
+     */
     private static function sipNotify(string $event, string $device): bool
     {
         /** @var AGI_AsteriskManager $astman  */
