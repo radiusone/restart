@@ -1,12 +1,7 @@
 if($("#idTime").length && typeof moment !== "undefined") {
-    var time = $("#idTime").data("time");
-    var timezone = $("#idTime").data("zone");
-    var updateTime = function() {
-        $("#idTime").text(moment.unix(time).tz(timezone).format('HH:mm:ss z'));
-        time = time + 1;
-    };
-
-    setInterval(updateTime,1000);
+    let time = parseInt($("#idTime").data("time"), 10);
+    const timezone = $("#idTime").data("zone");
+    setInterval(() => $("#idTime").text(moment.unix(time++).tz(timezone).format('HH:mm:ss z')), 1000);
 }
 
 $("#selectall").on("click", function() {
@@ -14,14 +9,18 @@ $("#selectall").on("click", function() {
 });
 
 $("input[name=enable_schedule]").on("change", function() {
-    $(".scheduler").prop("disabled", !Boolean(parseInt(this.value)));
+    const val = Boolean(parseInt(this.value));
+    $(".scheduler").not("#schedexpression").prop("disabled", !val);
+    if (!val) {
+        $("#schedexpression").prop("disabled", $("enable-schedexpression").prop("checked"));
+    }
     $("#schedtime:enabled").focus();
 });
 
 $("#schedmonth").on("change", function() {
-    var sel = $("#schedmonth");
-    var months = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    var days = months[sel.val()];
+    const sel = $("#schedmonth");
+    const months = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    const days = months[sel.val()];
     $("#schedday option").each(function(i, el) {
         el = $(el);
         el.prop("disabled", (el.val() > days));
@@ -30,6 +29,11 @@ $("#schedmonth").on("change", function() {
         $("#schedday").val(days).prop("selectedIndex", days);
     }
 });
+
+$("#enable-schedexpression").on("change", function() {
+    $(".scheduler").not("#schedexpression, #enable-schedexpression").prop("disabled", this.checked);
+    $("#schedexpression").prop("disabled", !this.checked);
+})
 
 $("#pending_restart_grid").on("load-success.bs.table", function(e) {
     $("a.deleter").on("click", function(e) {
@@ -44,11 +48,10 @@ $("#pending_restart_grid").on("load-success.bs.table", function(e) {
 
 var Restart = {
     actionLinkFormatter: function (value, row, index) {
-        var url = "ajax.php?module=restart&command=deleteJob&itemid=" + encodeURIComponent(row.jobname);
-        var link = $("<a>")
-            .attr("href", url)
+        return $("<a>")
+            .attr("href", "ajax.php?module=restart&command=deleteJob&itemid=" + encodeURIComponent(row.jobname))
             .addClass("deleter")
-            .append($("<i>").addClass("fa").addClass("fa-trash"));
-        return link.prop("outerHTML");
+            .append($("<i>").addClass("fa").addClass("fa-trash"))
+            .prop("outerHTML");
     }
 };

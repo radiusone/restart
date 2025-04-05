@@ -2,9 +2,11 @@
 namespace FreePBX\modules;
 
 use DateTime;
+use Exception;
 use FreePBX;
 use FreePBX\Ajax;
 use AGI_AsteriskManager;
+use Cron\CronExpression;
 use FreePBX\BMO;
 use FreePBX\FreePBX_Helpers as Helper;
 use FreePBX\modules\Restart\Job;
@@ -140,44 +142,48 @@ class Restart extends Helper implements BMO
     public function showPage(): string
     {
         $txtinfo = sprintf(
-            '<div class="well well-info">%s</div>',
+            '<div class="alert alert-info">%s</div>',
             htmlspecialchars(_("Currently, only Aastra, Snom, Polycom, Grandstream and Cisco devices are supported."))
         );
 
         if (is_array($_POST["restartlist"] ?? null)) {
             $restartlist = $_POST['restartlist'];
-            if (empty($_POST["schedtime"])) {
+            if (($_POST["enable_schedule"] ?? "0") === "0") {
                 foreach($restartlist as $device) {
                     Restart::restartDevice($device);
                     $txtinfo = sprintf(
-                        '<div class="well well-info">%s</div>',
+                        '<div class="alert alert-info">%s</div>',
                         htmlspecialchars(_("Restart requests sent!"))
                     );
                 }
             } else {
                 $schedtime = $_POST["schedtime"];
-                $schedmonth = $_POST["schedmonth"];
-                $schedday = $_POST["schedday"];
-                $recurring = !empty($_POST["schedrecurring"]);
-                if ($schedmonth === "*") {
-                    $format = ($schedday === "*" ? "*-* H:i" : "*-d H:i");
-                } elseif ($schedday === "*") {
-                    $format = "m-* H:i";
-                } else {
-                    $format = "m-d H:i";
-                }
-                $date = DateTime::createFromFormat($format, "$schedmonth-$schedday $schedtime");
-                if ($date) {
+                [$schedhour, $schedmin] = explode(":", $schedtime);
+                $schedmonth = $_POST["schedmonth"] ?? "*";
+                $schedday = $_POST["schedday"] ?? "*";
+                $scheddow = $_POST["scheddow"] ?? "*";
+                $custom_expr = $_POST["schedexpression"] ?? null;
+                $recurring = ($_POST["schedrecurring"] ?? "0") === "1" || !is_null($custom_expr);
+
+                try {
+                    $schedule = CronExpression::factory($custom_expr ?? "* * * * *");
+                    if (is_null($custom_expr)) {
+                        $schedule->setPart(CronExpression::MINUTE, $schedmin);
+                        $schedule->setPart(CronExpression::HOUR, $schedhour);
+                        $schedule->setPart(CronExpression::DAY, $schedday);
+                        $schedule->setPart(CronExpression::MONTH, $schedmonth);
+                        $schedule->setPart(CronExpression::WEEKDAY, $scheddow);    
+                    }
                     foreach ($restartlist as $device) {
-                        $this->scheduleRestart($device, $schedtime, $schedmonth, $schedday, $recurring);
+                        $this->scheduleRestart($device, $schedule, $recurring);
                     }
                     $txtinfo = sprintf(
-                        '<div class="well well-info">%s</div>',
+                        '<div class="alert alert-info">%s</div>',
                         htmlspecialchars(_("Restart requests scheduled!"))
                     );
-                } else {
+                } catch (Exception $e) {
                     $txtinfo = sprintf(
-                        '<div class="well well-error">%s</div>',
+                        '<div class="alert alert-danger">%s</div>',
                         htmlspecialchars(_("An invalid schedule was provided."))
                     );
                 }
@@ -206,78 +212,13 @@ class Restart extends Helper implements BMO
         );
         $now = new Datetime();
         foreach ($jobs as $job) {
-            $sched = explode(" ", $job["schedule"]);
+            [$minute, $hour, $day, $month, $dow] = explode(" ", $job["schedule"]);
+            $minute = sprintf("%02d", $minute);
+            $hour = sprintf("%02d", $hour);
             $time = $job["schedule"];
-            $minute = $sched[0];
-            $hour = $sched[1];
-            $day = $sched[2];
-            $month = $sched[3];
             $jobname = $job["jobname"];
-            if (str_starts_with($jobname, "recurring")) {
-                if ("$day$month" === "**") {
-                    $dt = Datetime::createFromFormat("Hi", "$hour$minute");
-                    $time = sprintf(_("Every day at %s"), $dt->format(_("g:i a")));
-                } elseif ($month === "*") {
-                    $dt = Datetime::createFromFormat("Hi j", "$hour$minute $day");
-                    $time = sprintf(
-                        _("%s of every month at %s"),
-                        $dt->format(_("jS")),
-                        $dt->format(_("g:i a"))
-                    );
-                } elseif ($day === "*") {
-                    $dt = Datetime::createFromFormat("Hi n", "$hour$minute $month");
-                    $time = sprintf(
-                        _("Every day in %s at %s"),
-                        $dt->format(_("F")),
-                        $dt->format(_("g:i a"))
-                    );
-                } else {
-                    $dt = Datetime::createFromFormat("Hi n j", "$hour$minute $month $day");
-                    $time = sprintf(
-                        _("Every year on %s at %s"),
-                        $dt->format(_("j M")),
-                        $dt->format(_("g:i a"))
-                    );
-                }
-            } elseif ("$day$month" === "**") {
-                $dt = Datetime::createFromFormat("Hi", "$hour$minute");
-                $time = sprintf(
-                    _("%s at %s"),
-                    $dt < $now ? _("Tomorrow") : _("Today"),
-                    $dt->format(_("g:i a"))
-                );
-            } elseif ($month === "*") {
-                // check if it's this month or next
-                $dt = Datetime::createFromFormat("Hi j", "$hour$minute $day");
-                if ($now > $dt) {
-                    $dt->modify("+1 month");
-                }
-                $time = sprintf(
-                    "%s at %s",
-                    $dt->format("md") < $now->format("md")
-                        ? $dt->modify("+1 year")->format(_("j M Y"))
-                        : $dt->format(_("j M")),
-                    $dt->format(_("g:i a"))
-                );
-            } elseif ($day === "*") {
-                $dt = Datetime::createFromFormat("n j Hi", "$month 1 $hour$minute");
-                $time = sprintf(
-                    "%s at %s",
-                    $dt->format("md") < $now->format("md")
-                        ? $dt->modify("+1 year")->format(_("j M Y"))
-                        : $dt->format(_("j M")),
-                    $dt->format(_("g:i a"))
-                );
-            } else {
-                $dt = Datetime::createFromFormat("n j Hi", "$month $day $hour$minute");
-                $time = sprintf(
-                    "%s at %s",
-                    $dt->format("md") < $now->format("md")
-                        ? $dt->modify("+1 year")->format(_("j M Y"))
-                        : $dt->format(_("j M")),
-                    $dt->format(_("g:i a"))
-                );
-            }
+            $time = self::cronToHuman($job["schedule"], recurring: str_starts_with($jobname, "recurring"));
+
             if ($devices = $this->getConfig($jobname)) {
                 $devices = is_array($devices) ? implode(", ", $devices) : $devices;
             } else {
@@ -319,32 +260,20 @@ class Restart extends Helper implements BMO
      * Save the scheduled restart as a job and also as a module config setting
      * 
      * @param string $device the extension to restart
-     * @param string $schedtime the restart time of day in hh:mm format
-     * @param string $schedmonth the restart month (1-12) or *
-     * @param string $schedday the restart day (1-31) or *
+     * @param CronExpression $schedule the cron schedule
      * @param bool $recurring if true, the job and config are retained after running, to be run again 
      */
-    public function scheduleRestart(string $device, string $schedtime, string $schedmonth, string $schedday, bool $recurring = false): bool
+    public function scheduleRestart(string $device, CronExpression $schedule, bool $recurring = false): bool
     {
-        list($hour, $min) = explode(":", $schedtime);
         $uuid = Uuid::uuid4();
-        $jobname = sprintf(
-            "%s_reboot_%s_%s_%s%s_%s",
-            ($recurring ? "recurring" : "scheduled"),
-            $schedmonth,
-            $schedday,
-            $hour,
-            $min,
-            $uuid
-        );
-        $schedule = "$min $hour $schedday $schedmonth *";
+        $jobname = sprintf("%s_%s", $recurring ? "recurring" : "scheduled", $uuid);
         $job = FreePBX::Job();
         $job->remove(self::MODULE_NAME, $jobname);
         $job->addClass(
             self::MODULE_NAME,
             $jobname,
             Job::class,
-            $schedule
+            $schedule->getExpression()
         );
 
         return $this->setConfig($jobname, $device);
@@ -392,5 +321,119 @@ class Restart extends Helper implements BMO
         $result = $astman->command($command);
 
         return $result["Response"] === "Success";
+    }
+
+    /**
+     * Convert a cron expression to a human readable text
+     * 
+     * @param string|CronExpression $cron
+     * @param bool $recurring determines if return looks like "every ..." or "next ..."
+     * @param string $date_format defaults to "j M Y" if not specified
+     * @param string $time_format defaults to "g:i: a" if not specified
+     */
+    private static function cronToHuman(string|CronExpression $cron, bool $recurring, string $date_format = null, string $time_format = null): string
+    {
+        if (is_string($cron)) {
+            $cron = CronExpression::factory($cron);
+        }
+        $date_format ??= _("j M Y");
+        $short_date_format = trim(str_replace("Y", "", $date_format));
+        $time_format ??= _("g:i a");
+
+        $now = new DateTime();
+        $time = null;
+        [$minute, $hour, $day, $month, $dow] = explode(" ", $cron);
+        if (is_numeric($minute)) {
+            $minute = sprintf("%02d", $minute);
+        }
+        if (is_numeric($hour)) {
+            $hour = sprintf("%02d", $hour);
+        }
+        if (is_numeric($day)) {
+            $day = sprintf("%02d", $day);
+        }
+        if (is_numeric($month)) {
+            $month = sprintf("%02d", $month);
+        }
+        if (is_numeric($dow)) {
+            $dow = (new DateTime("sunday + $dow days"))->format("l");
+        } else {
+            $dow = _("day");
+        }
+        $skip = preg_match("~[,/@]~", $cron) || $hour === "*" || $minute === "*";
+
+        if ($recurring && !$skip) {
+            if ("$day$month" === "**") {
+                $dt = Datetime::createFromFormat("Hi", "$hour$minute");
+                $time = sprintf(_("Every %s at %s"), $dow, $dt->format($time_format));
+            } elseif ($month === "*") {
+                $dt = Datetime::createFromFormat("Hi d", "$hour$minute $day");
+                $time = sprintf(
+                    _("%s of every month at %s"),
+                    $dt->format(_("jS")),
+                    $dt->format($time_format)
+                );
+            } elseif ($day === "*") {
+                $dt = Datetime::createFromFormat("Hi m", "$hour$minute $month");
+                $time = sprintf(
+                    _("Every %s in %s at %s"),
+                    $dow,
+                    $dt->format(_("F")),
+                    $dt->format($time_format)
+                );
+            } elseif ($dow === _("day")) {
+                $dt = Datetime::createFromFormat("Hi m d", "$hour$minute $month $day");
+                $time = sprintf(
+                    _("Every year on %s at %s"),
+                    $dt->format($short_date_format),
+                    $dt->format($time_format)
+                );
+            }
+        } elseif (!$recurring && !$skip) {
+            if ("$day$month" === "**") {
+                $dt = Datetime::createFromFormat("Hi", "$hour$minute");
+                $time = sprintf(
+                    _("%s at %s"),
+                    $dow === _("day") ? ($dt < $now ? _("Tomorrow") : _("Today")) : sprintf(_("Next %s"), $dow),
+                    $dt->format($time_format)
+                );
+            } elseif ($month === "*") {
+                // check if it's this month or next
+                $dt = Datetime::createFromFormat("Hi d", "$hour$minute $day");
+                if ($now > $dt) {
+                    $dt->modify("+1 month");
+                }
+                $time = sprintf(
+                    "%s at %s",
+                    $dt->format("md") < $now->format("md")
+                        ? $dt->modify("+1 year")->format($date_format)
+                        : $dt->format($short_date_format),
+                    $dt->format($time_format)
+                );
+            } elseif ($day === "*") {
+                $dt = Datetime::createFromFormat("m d Hi", "$month 1 $hour$minute");
+                $time = sprintf(
+                    "%s at %s",
+                    $dt->format("md") < $now->format("md")
+                        ? $dt->modify("+1 year")->format($date_format)
+                        : $dt->format($short_date_format),
+                    $dt->format($time_format)
+                );
+            } elseif ($dow === _("day")) {
+                $dt = Datetime::createFromFormat("m d Hi", "$month $day $hour$minute");
+                $time = sprintf(
+                    "%s at %s",
+                    $dt->format("md") < $now->format("md")
+                        ? $dt->modify("+1 year")->format($date_format)
+                        : $dt->format($short_date_format),
+                    $dt->format($time_format)
+                );
+            }
+        }
+
+        // something complicated, I cba parsing it
+        $time ??= sprintf(_("Custom cron schedule: %s"), $cron);
+
+        return $time;
     }
 }
