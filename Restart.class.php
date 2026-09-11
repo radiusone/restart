@@ -12,9 +12,15 @@ use FreePBX\FreePBX_Helpers as Helper;
 use FreePBX\modules\Restart\Job;
 use Ramsey\Uuid\Uuid;
 
+use function in_array;
+use function is_array;
+use function is_null;
+use function is_string;
+use function sprintf;
+
 class Restart extends Helper implements BMO
 {
-    const MODULE_NAME = "restart";
+    public const MODULE_NAME = "restart";
 
     private FreePBX $FreePBX;
 
@@ -181,7 +187,7 @@ class Restart extends Helper implements BMO
                         '<div class="alert alert-info">%s</div>',
                         htmlspecialchars(_("Restart requests scheduled!"))
                     );
-                } catch (Exception $e) {
+                } catch (Exception) {
                     $txtinfo = sprintf(
                         '<div class="alert alert-danger">%s</div>',
                         htmlspecialchars(_("An invalid schedule was provided."))
@@ -210,14 +216,10 @@ class Restart extends Helper implements BMO
             $job->getAll(),
             fn($v) => $v["modulename"] === self::MODULE_NAME
         );
-        $now = new Datetime();
         foreach ($jobs as $job) {
-            [$minute, $hour, $day, $month, $dow] = explode(" ", $job["schedule"]);
-            $minute = sprintf("%02d", $minute);
-            $hour = sprintf("%02d", $hour);
             $time = $job["schedule"];
             $jobname = $job["jobname"];
-            $time = self::cronToHuman($job["schedule"], recurring: str_starts_with($jobname, "recurring"));
+            $time = self::cronToHuman($time, recurring: str_starts_with($jobname, "recurring"));
 
             if ($devices = $this->getConfig($jobname)) {
                 $devices = is_array($devices) ? implode(", ", $devices) : $devices;
@@ -293,7 +295,7 @@ class Restart extends Helper implements BMO
         $astman->useCaching = false;
         $command = sprintf("registrar/contact/%d%%", $device);
         $responses = $astman->database_show($command);
-        foreach ($responses as $contact => $data) {
+        foreach ($responses as $data) {
             $data = json_decode($data, true);
             if (!empty($data["user_agent"])) {
                 $ua = $data["user_agent"];
@@ -328,10 +330,10 @@ class Restart extends Helper implements BMO
      * 
      * @param string|CronExpression $cron
      * @param bool $recurring determines if return looks like "every ..." or "next ..."
-     * @param string $date_format defaults to "j M Y" if not specified
-     * @param string $time_format defaults to "g:i: a" if not specified
+     * @param string|null $date_format defaults to "j M Y" if null
+     * @param string|null $time_format defaults to "g:i: a" if null
      */
-    private static function cronToHuman(string|CronExpression $cron, bool $recurring, string $date_format = null, string $time_format = null): string
+    private static function cronToHuman(string|CronExpression $cron, bool $recurring, string|null $date_format = null, string|null $time_format = null): string
     {
         if (is_string($cron)) {
             $cron = CronExpression::factory($cron);
